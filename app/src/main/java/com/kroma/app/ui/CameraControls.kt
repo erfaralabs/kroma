@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -40,6 +41,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -96,18 +98,26 @@ fun LensPicker(
 ) {
     val haptic = LocalHapticFeedback.current
     val scrubMax = stops.lastOrNull() ?: 1f
-    // The collapsed pill shows a 3-stop window that FOLLOWS the current zoom.
-    val centre = stops.indices.minByOrNull { kotlin.math.abs(stops[it] - liveZoom) } ?: 0
-    val from = (centre - 1).coerceIn(0, (stops.size - 3).coerceAtLeast(0))
-    val compact = stops.subList(from, (from + 3).coerceAtMost(stops.size))
+    val currentZoom = rememberUpdatedState(liveZoom)
+    val currentOnZoom = rememberUpdatedState(onZoom)
+    // Pill is `1 | 2 | <third>`. The third slot shows the zoom you're ON; it only falls back
+    // to the standard `3` when you're sitting on one of the first two stops.
+    val base = stops.take(3)
+    val onFirstTwo = base.size >= 2 &&
+        (kotlin.math.abs(liveZoom - base[0]) < 0.05f || kotlin.math.abs(liveZoom - base[1]) < 0.05f)
+    val chips = if (base.size == 3) {
+        listOf(base[0], base[1], if (onFirstTwo) base[2] else liveZoom)
+    } else {
+        base
+    }
 
     var scrubbing by remember { mutableStateOf(false) }
     var lastEvent by remember { mutableLongStateOf(0L) }
 
-    // Safety net: if a drag-end event is ever missed, collapse the ruler anyway.
+    // Safety net: collapse the ruler shortly after the last interaction.
     LaunchedEffect(scrubbing, lastEvent) {
         if (scrubbing) {
-            delay(900)
+            delay(3500)
             scrubbing = false
         }
     }
@@ -117,18 +127,22 @@ fun LensPicker(
             .fillMaxWidth()
             .height(if (scrubbing) 74.dp else 52.dp)
             .pointerInput(stops) {
-                val w = size.width.toFloat().coerceAtLeast(1f)
-
-                var lastTick = -1
-
-                fun scrubTo(x: Float) {
+                // Tap to OPEN the ruler overlay (the "grid" UI).
+                detectTapGestures {
+                    scrubbing = !scrubbing
                     lastEvent = System.currentTimeMillis()
-                    val t = (x / w).coerceIn(0f, 1f)
-                    // Continuous zoom across the DEVICE's range (1x..max); the sub-1x stop is a lens chip.
-                    val z = 1f + t * (scrubMax - 1f)
-                    onZoom(z)
+                }
+            }
+            .pointerInput(stops) {
+                val w = size.width.toFloat().coerceAtLeast(1f)
+                var lastTick = -1
+                var anchor = 1f
+                var acc = 0f
 
-                    val whole = z.roundToInt()
+                fun report(z: Float) {
+                    val clamped = z.coerceIn(1f, scrubMax)
+                    currentOnZoom.value(clamped)
+                    val whole = clamped.roundToInt()
                     if (whole != lastTick) {
                         lastTick = whole
                         val major = whole == 1 || whole == 2 || whole == 5 || whole == 10
@@ -140,14 +154,20 @@ fun LensPicker(
 
                 detectHorizontalDragGestures(
                     onDragStart = {
+                        // RELATIVE scrub: grabs from the CURRENT zoom, so it never jumps.
                         scrubbing = true
-                        scrubTo(it.x)
+                        anchor = currentZoom.value.coerceIn(1f, scrubMax)
+                        acc = 0f
+                        lastEvent = System.currentTimeMillis()
                     },
                     onDragEnd = { scrubbing = false },
                     onDragCancel = { scrubbing = false },
-                ) { change, _ ->
+                ) { change, dragAmount ->
                     change.consume()
-                    scrubTo(change.position.x)
+                    lastEvent = System.currentTimeMillis()
+                    acc += dragAmount
+                    // Full width of travel = the device's whole zoom range.
+                    report(anchor + (acc / w) * (scrubMax - 1f))
                 }
             },
         contentAlignment = Alignment.Center,
@@ -163,9 +183,14 @@ fun LensPicker(
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                compact.forEach { zoom ->
-                    val i = stops.indexOf(zoom)
-                    val active = i == selected
+                chips.forEach { zoom ->
+                    val i = stops.indexOfFirst { kotlin.math.abs(it - zoom) < 0.001f }
+                    val active = kotlin.math.abs(zoom - liveZoom) < 0.05f
+                    val num = if (kotlin.math.abs(zoom - zoom.toInt()) < 0.05f) {
+                        zoom.toInt().toString()
+                    } else {
+                        String.format(java.util.Locale.US, "%.1f", zoom)
+                    }
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(50))
@@ -176,11 +201,11 @@ fun LensPicker(
                                     Modifier
                                 },
                             )
-                            .clickable { onSelect(i) }
+                            .clickable(enabled = i >= 0) { if (i >= 0) onSelect(i) }
                             .padding(horizontal = 20.dp, vertical = 9.dp),
                     ) {
                         Text(
-                            if (active) zoomLabel(zoom) + "x" else zoomLabel(zoom),
+                            if (active) num + "x" else num,
                             color = if (active) Color.White else Color(0x99FFFFFF),
                             fontSize = 15.sp,
                             fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
