@@ -99,11 +99,16 @@ void main() {
     chroma_styled = 0.0;
   }
 
-  // 3. Skin Tone Hue Protection
+  // 3. Semantic Spatial Awareness & Skin Tone Protection (Spec §4.4)
   float d_skin = sqrt(pow((a - 0.092) / 0.040, 2.0) + pow((b - 0.061) / 0.030, 2.0));
-  float w_skin = clamp(1.0 - d_skin, 0.0, 1.0) * skinAlpha;
+  float lum_gate = smoothstep(0.12, 0.26, L) * (1.0 - smoothstep(0.85, 0.96, L));
+  float sat_gate = 1.0 - smoothstep(0.18, 0.25, chroma);
+  vec2 frame_offset = (v_TexCoord - vec2(0.5, 0.48)) * vec2(1.0, 0.85);
+  float spatial_weight = 1.0 - smoothstep(0.35, 0.75, length(frame_offset));
 
-  float L_protected = mix(L_styled, mix(L, L_styled, 0.25), w_skin);
+  float w_skin = clamp(1.0 - d_skin, 0.0, 1.0) * lum_gate * sat_gate * mix(0.75, 1.0, spatial_weight) * skinAlpha;
+
+  float L_protected = mix(L_styled, 0.85 * L + 0.15 * L_styled, w_skin);
   float C_protected = mix(chroma_styled, chroma * (1.0 + (effColor / 100.0) * 0.15), w_skin);
   float h_protected = mix(hue_styled, hue, w_skin);
 

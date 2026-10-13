@@ -246,25 +246,17 @@ private class StyleRenderer(private val context: Context) : GLSurfaceView.Render
         if (viewW <= 0 || viewH <= 0 || bufW <= 0 || bufH <= 0) return floatArrayOf(1f, 1f)
 
         val swapped = (viewW < viewH) != (bufW < bufH)
-        val texW = if (swapped) bufH else bufW   // image size in display orientation
-        val texH = if (swapped) bufW else bufH
+        val texW = if (swapped) bufH.toFloat() else bufW.toFloat()
+        val texH = if (swapped) bufW.toFloat() else bufH.toFloat()
 
-        val viewAspect = viewW.toFloat() / viewH
-        val texAspect = texW.toFloat() / texH
+        val viewAspect = viewW.toFloat() / viewH.toFloat()
+        val texAspect = texW / texH
 
-        // Crop factors in DISPLAY space.
-        val dispX: Float
-        val dispY: Float
-        if (viewAspect < texAspect) {
-            dispX = viewAspect / texAspect   // viewport narrower than image -> crop the sides
-            dispY = 1f
+        return if (viewAspect < texAspect) {
+            floatArrayOf(viewAspect / texAspect, 1f)
         } else {
-            dispX = 1f
-            dispY = texAspect / viewAspect   // viewport wider than image -> crop top/bottom
+            floatArrayOf(1f, texAspect / viewAspect)
         }
-
-        // Convert to buffer space: a rotated transform swaps the axes.
-        return if (swapped) floatArrayOf(dispY, dispX) else floatArrayOf(dispX, dispY)
     }
 
     private fun buildProgram(): Int {

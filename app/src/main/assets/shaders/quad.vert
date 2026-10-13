@@ -11,7 +11,7 @@ uniform mat4 u_TexMatrix;   // SurfaceTexture transform
 uniform vec2 u_CropScale;   // uv crop (<=1) per axis
 
 void main() {
-  vec2 uv = (u_TexMatrix * vec4(a_TexCoord, 0.0, 1.0)).xy;
-  v_TexCoord = vec2(0.5) + (uv - vec2(0.5)) * u_CropScale;
+  vec2 cropped = vec2(0.5) + (a_TexCoord - vec2(0.5)) * u_CropScale;
+  v_TexCoord = (u_TexMatrix * vec4(cropped, 0.0, 1.0)).xy;
   gl_Position = vec4(a_Position, 0.0, 1.0);
 }

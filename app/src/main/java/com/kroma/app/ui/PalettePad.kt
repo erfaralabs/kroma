@@ -16,19 +16,15 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import com.kroma.app.engine.StyleState
 
 /**
- * The spec §1 surface: a 2D touch boundary where **X = Color**, **Y = Tone** (both `[-100,+100]`).
- *
- * Two markers are drawn:
- *  * the **preset anchor** (small accent crosshair) — where the puck *rests* by default, and
- *  * the **puck** — the *effective* coordinate (`pad + anchor`) the shader receives.
- *
- * Dragging writes back the *pad offset* (`effective - anchor`), matching
- * `effectiveCoords = clamp(u_PadCoordinates + u_PresetAnchor)`.
+ * iOS Photographic Styles 2D Control Pad:
+ * Terracotta-to-cool dark gradient surface with dotted crosshairs,
+ * default anchor dot, and movable puck controlling Color (X) and Tone (Y).
  */
 @Composable
 fun PalettePad(
@@ -45,12 +41,24 @@ fun PalettePad(
         return (ex - anchorX) to (ey - anchorY)
     }
 
+    val padShape = RoundedCornerShape(20.dp)
+
     Box(
         modifier = modifier
-            .size(KromaDimens.PadSize)
-            .clip(RoundedCornerShape(18.dp))
-            .background(Brush.verticalGradient(listOf(Color(0xFF1B1F26), Color(0xFF0E1116))))
-            .border(1.dp, KromaColors.SheetEdge, RoundedCornerShape(18.dp))
+            .size(140.dp)
+            .clip(padShape)
+            .background(
+                Brush.linearGradient(
+                    colors = listOf(
+                        Color(0xFF222834), // cool dark bottom-left
+                        Color(0xFF5A4440), // mid transition
+                        Color(0xFF9E6454), // warm terracotta top-right
+                    ),
+                    start = Offset(0f, 400f),
+                    end = Offset(400f, 0f),
+                ),
+            )
+            .border(1.dp, Color(0x38FFFFFF), padShape)
             .pointerInput(state.presetId) {
                 detectDragGestures(
                     onDragStart = { pos ->
@@ -76,23 +84,36 @@ fun PalettePad(
             fun px(v: Float) = (v + 100f) / 200f * w
             fun py(v: Float) = (1f - (v + 100f) / 200f) * h
 
-            // crosshair through the origin
-            val hair = Color(0x1FFFFFFF)
-            drawLine(hair, Offset(px(0f), 0f), Offset(px(0f), h), strokeWidth = 1.5f)
-            drawLine(hair, Offset(0f, py(0f)), Offset(w, py(0f)), strokeWidth = 1.5f)
+            // Subtle dotted matrix or dots at quadrants
+            val dotColor = Color(0x18FFFFFF)
+            for (gx in -2..2) {
+                for (gy in -2..2) {
+                    if (gx != 0 || gy != 0) {
+                        drawCircle(dotColor, radius = 1.2f, center = Offset(px(gx * 40f), py(gy * 40f)))
+                    }
+                }
+            }
 
-            // preset anchor marker
+            // Dotted crosshair through the origin (0, 0)
+            val dashEffect = PathEffect.dashPathEffect(floatArrayOf(5f, 5f), 0f)
+            val hairColor = Color(0x38FFFFFF)
+            drawLine(hairColor, Offset(px(0f), 0f), Offset(px(0f), h), strokeWidth = 1.2f, pathEffect = dashEffect)
+            drawLine(hairColor, Offset(0f, py(0f)), Offset(w, py(0f)), strokeWidth = 1.2f, pathEffect = dashEffect)
+
+            // Preset anchor marker (small solid dot at default anchor)
             val ax = px(anchorX)
             val ay = py(anchorY)
-            drawCircle(KromaColors.Accent.copy(alpha = 0.30f), radius = 12f, center = Offset(ax, ay), style = Stroke(1.5f))
-            drawCircle(KromaColors.Accent, radius = 3.5f, center = Offset(ax, ay))
+            drawCircle(Color(0xCCFFFFFF), radius = 2.5.dp.toPx(), center = Offset(ax, ay))
 
-            // puck at the effective (anchor + pad) coordinate
+            // Movable puck at effective coordinate (anchor + pad)
             val cx = px(state.effectiveColor)
             val cy = py(state.effectiveTone)
-            drawCircle(Color(0x66000000), radius = 20f, center = Offset(cx, cy + 3f))
-            drawCircle(Color.White, radius = 17f, center = Offset(cx, cy))
-            drawCircle(Color(0x33000000), radius = 17f, center = Offset(cx, cy), style = Stroke(1.5f))
+            // Soft shadow under puck
+            drawCircle(Color(0x59000000), radius = 12.dp.toPx(), center = Offset(cx, cy + 2f))
+            // Solid white puck
+            drawCircle(Color.White, radius = 9.dp.toPx(), center = Offset(cx, cy))
+            // Subtle hairline border
+            drawCircle(Color(0x33000000), radius = 9.dp.toPx(), center = Offset(cx, cy), style = Stroke(1.dp.toPx()))
         }
     }
 }
