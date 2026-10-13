@@ -98,8 +98,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private val LENS_ZOOMS = listOf(0.5f, 1f, 2f, 4f, 8f)
-
 /** A real Android camera app: CameraX preview + capture, styled with the Kroma engine. */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -139,7 +137,8 @@ private fun KromaApp() {
     var menuOpen by remember { mutableStateOf(false) }
     var stylesOpen by remember { mutableStateOf(false) }
     var calibrationOpen by remember { mutableStateOf(false) }
-    var lens by remember { mutableStateOf(1) }
+    var lens by remember { mutableStateOf(0) }
+    var zoomStops by remember { mutableStateOf(listOf(1f)) }
     var mode by remember { mutableStateOf(CameraMode.PHOTO) }
     var focusLocked by remember { mutableStateOf(false) }
     var recording by remember { mutableStateOf(false) }
@@ -160,7 +159,13 @@ private fun KromaApp() {
 
     // Push the live style state to the GL preview pass every time it changes.
     LaunchedEffect(state) { glView.setStyle(StyleParams.from(state)) }
-    LaunchedEffect(lens) { session.setZoom(LENS_ZOOMS[lens]) }
+    LaunchedEffect(Unit) { session.onZoomStopsChanged = { zoomStops = it } }
+
+    // Keep the picker on the 1x stop when the device's zoom range arrives.
+    LaunchedEffect(zoomStops) {
+        lens = zoomStops.indexOfFirst { it in 0.99f..1.01f }.coerceAtLeast(0)
+    }
+    LaunchedEffect(lens, zoomStops) { session.setZoom(zoomStops.getOrElse(lens) { 1f }) }
     LaunchedEffect(message) {
         message?.let {
             Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
@@ -235,7 +240,7 @@ private fun KromaApp() {
                     Spacer(Modifier.height(10.dp))
                 }
 
-                LensPicker(selected = lens, onSelect = { lens = it })
+                LensPicker(stops = zoomStops, selected = lens, onSelect = { lens = it })
                 Spacer(Modifier.height(14.dp))
 
                 Row(

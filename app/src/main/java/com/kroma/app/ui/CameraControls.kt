@@ -46,18 +46,26 @@ fun ViewfinderGrid(modifier: Modifier = Modifier) {
     }
 }
 
-private val LENS_LABELS = listOf(".5", "1", "2", "4", "8")
+private fun zoomLabel(v: Float): String =
+    if (v == v.toInt().toFloat()) v.toInt().toString()
+    else String.format(java.util.Locale.US, "%.1f", v).removePrefix("0")
 
-/** `.5  1x  2  4  8` — the active lens sits on a dark pill with an `x` suffix. */
+/** Zoom picker — stops come from the device's own zoom range. Active stop sits on a dark pill. */
 @Composable
-fun LensPicker(selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
+fun LensPicker(
+    stops: List<Float>,
+    selected: Int,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Row(
         modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        LENS_LABELS.forEachIndexed { i, label ->
+        stops.forEachIndexed { i, zoom ->
             val active = i == selected
+            val label = zoomLabel(zoom)
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(50))
@@ -183,14 +191,14 @@ fun ModeSelector(selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Mo
                     .clip(RoundedCornerShape(50))
                     .background(if (active) Color(0x8A3A3A3A) else Color.Transparent)
                     .clickable { onSelect(i) }
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                    .padding(horizontal = 18.dp, vertical = 9.dp),
             ) {
                 Text(
                     mode,
                     color = if (active) KromaColors.Accent else Color(0xFFB0B0B0),
-                    fontSize = 11.sp,
+                    fontSize = 13.sp,
                     fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
-                    letterSpacing = 0.5.sp,
+                    letterSpacing = 0.8.sp,
                 )
             }
         }

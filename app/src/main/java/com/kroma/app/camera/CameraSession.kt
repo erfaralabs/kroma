@@ -61,6 +61,13 @@ class CameraSession(private val context: Context) {
     var aspectRatio: Int = AspectRatio.RATIO_4_3
         private set
 
+    /** Zoom stops offered by THIS device, derived from its zoom range (e.g. 0.5/1/2/4/8). */
+    var zoomStops: List<Float> = listOf(1f)
+        private set
+
+    /** Notified whenever the derived zoom stops change so the UI can rebuild the picker. */
+    var onZoomStopsChanged: ((List<Float>) -> Unit)? = null
+
     val isRecording: Boolean get() = activeRecording != null
 
     fun attach(
@@ -142,6 +149,8 @@ class CameraSession(private val context: Context) {
         }
         imageCapture = still
         videoCapture = if (videoEnabled) VideoCapture.withOutput(recorder) else null
+
+        computeZoomStops()
     }
 
     /** Real optical/digital zoom, clamped to what the lens supports. */
@@ -191,6 +200,27 @@ class CameraSession(private val context: Context) {
         } catch (t: Throwable) {
             fallback
         }
+    }
+
+    /**
+     * Builds the zoom picker stops from the device's real zoom range instead of hardcoding
+     * them: an ultra-wide stop if the lens zooms out below 1x, 1x, then 2/4/8 while the device
+     * supports them, finally the device maximum.
+     */
+    private fun computeZoomStops() {
+        val z = camera?.cameraInfo?.zoomState?.value
+        if (z == null) {
+            zoomStops = listOf(1f)
+            return
+        }
+        val stops = mutableListOf<Float>()
+        if (z.minZoomRatio < 0.95f) stops += z.minZoomRatio
+        stops += 1f
+        listOf(2f, 4f, 8f).forEach { if (it <= z.maxZoomRatio + 0.01f) stops += it }
+        if (stops.last() < z.maxZoomRatio - 0.01f) stops += z.maxZoomRatio
+        zoomStops = stops.distinct().sorted()
+        Log.i("KromaGL", "zoom stops = $zoomStops (min=${z.minZoomRatio}, max=${z.maxZoomRatio})")
+        onZoomStopsChanged?.invoke(zoomStops)
     }
 
     /** Real torch/flash mode: OFF → ON → AUTO. */
