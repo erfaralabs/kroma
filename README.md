@@ -10,9 +10,11 @@ An Android **Universal Camera** app implementing **iOS-style Photographic Styles
 | Gradle scaffold (`com.kroma.app`, AGP 8.5.2 / Kotlin 2.2.21, Compose) | ✅ |
 | GLSL shaders as assets (`photographic_style.frag`, `texture_engine.frag`) | ✅ |
 | 15-preset table + Oklab/tone/chroma/skin CPU reference (Kotlin) | ✅ |
+| **Debug build (`:app:assembleDebug`)** | ✅ **BUILD SUCCESSFUL** |
+| JVM unit tests (`app/src/test/.../StyleEngineTest.kt`) | ✅ **8/8 passing** |
 | Colour-science validation | ✅ `python3 tools/validate_style.py` |
-| JVM unit tests (`app/src/test/.../StyleEngineTest.kt`) | ⏳ run once Gradle deps are available |
 | Camera2/CameraX + GLES preview pipeline | ⏳ Phase 1/2 |
+| iOS-style UI (sheet, 2D pad, texture tab) | ⏳ see `UI_PLAN.md` |
 
 ## Layout
 
@@ -30,13 +32,19 @@ references/                         iOS Photographic Styles screenshots
 
 ## Building
 
-The Gradle distribution + dependency cache are **not present** on this machine
-(empty `~/.gradle`), so the first build downloads ~130 MB (Gradle) + several
-hundred MB (AGP/Kotlin/Compose). Until then, validate the engine with:
+Gradle's cache lives **outside the repo** to spare the internal disk:
 
 ```
-python3 tools/validate_style.py
+./build.sh :app:assembleDebug          # build
+./build.sh :app:testDebugUnitTest      # tests
+./eject.sh                             # release the drive (detach image)
+./eject.sh --drive                     # ...and eject the physical drive
 ```
 
-`local.properties` must point at the SDK (`sdk.dir=...`). Use an **arm64** JDK
-(e.g. `/Library/Java/JavaVirtualMachines/jdk-21.jdk`).
+`build.sh` forces the **arm64 JDK** (`jdk-21.jdk`) and points `GRADLE_USER_HOME` at
+a clean **APFS sparse image** on the external drive (`/Volumes/GradleHome`),
+auto-attaching it if needed. **Always build through `build.sh`**, not bare `./gradlew`.
+
+Purely-maths validation (no build needed): `python3 tools/validate_style.py`.
+
+`local.properties` must point at the SDK (`sdk.dir=...`).
