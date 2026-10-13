@@ -35,6 +35,7 @@ import androidx.lifecycle.LifecycleOwner
 import java.text.SimpleDateFormat
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.ceil
 
 /**
  * Thin, real CameraX wrapper: live preview, still capture to the gallery, video recording,
@@ -65,8 +66,22 @@ class CameraSession(private val context: Context) {
     var zoomStops: List<Float> = listOf(1f)
         private set
 
+    /** Ultra-wide lens (if the device has one) — enables the sub-1x stop, e.g. 0.6x. */
+    var ultraWideRatio: Float? = null
+        private set
+    private var ultraWideId: String? = null
+    private var mainCameraId: String? = null
+    private var activeCameraId: String? = null
+
     /** Notified whenever the derived zoom stops change so the UI can rebuild the picker. */
     var onZoomStopsChanged: ((List<Float>) -> Unit)? = null
+
+    /** Recording quality for VIDEO mode (real, applied by rebinding the recorder). */
+    var videoQuality: Quality = Quality.HD
+        private set
+
+    /** Notified when the recording quality changes. */
+    var onVideoQualityChanged: ((Quality) -> Unit)? = null
 
     val isRecording: Boolean get() = activeRecording != null
 
@@ -95,7 +110,15 @@ class CameraSession(private val context: Context) {
 
         p.unbindAll()
 
-        val selector = CameraSelector.Builder().requireLensFacing(lensFacing).build()
+        val selector = if (activeCameraId != null) {
+            CameraSelector.Builder()
+                .addCameraFilter { infos ->
+                    infos.filter { Camera2CameraInfo.from(it).cameraId == activeCameraId }
+                }
+                .build()
+        } else {
+            CameraSelector.Builder().requireLensFacing(lensFacing).build()
+        }
 
         // Preview resolution is chosen from the DEVICE's own supported stream sizes — nothing is
         // hardcoded per model. We take the size whose aspect best matches the screen, then the
@@ -129,7 +152,7 @@ class CameraSession(private val context: Context) {
             .setFlashMode(flashMode)
             .build()
         val recorder = Recorder.Builder()
-            .setQualitySelector(QualitySelector.from(Quality.HD))
+            .setQualitySelector(QualitySelector.from(videoQuality))
             .build()
         this.recorder = recorder
 
@@ -150,7 +173,72 @@ class CameraSession(private val context: Context) {
         imageCapture = still
         videoCapture = if (videoEnabled) VideoCapture.withOutput(recorder) else null
 
+        discoverLenses(p)
         computeZoomStops()
+    }
+
+    /**
+     * Finds the ultra-wide lens (a back camera with a markedly shorter focal length than the
+     * default one) so the picker can offer the sub-1x stop, e.g. 0.6x — as iOS and other camera
+     * apps do. Nothing is hardcoded: the ratio comes from the actual focal lengths.
+     */
+    private fun discoverLenses(provider: ProcessCameraProvider) {
+        try {
+            // Raw Camera2 inventory — shows every physical lens this device exposes.
+            val cm = context.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+            cm.cameraIdList.forEach { id ->
+                val ch = cm.getCameraCharacteristics(id)
+                val focals = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                    ?.joinToString()
+                val zoom = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    ch.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.toString()
+                } else {
+                    null
+                }
+                Log.i(
+                    "KromaGL",
+                    "camera id=$id facing=${ch.get(CameraCharacteristics.LENS_FACING)} focals=[$focals] zoomRange=$zoom",
+                )
+            }
+
+            val main = CameraSelector.DEFAULT_BACK_CAMERA.filter(provider.availableCameraInfos)
+                .firstOrNull() ?: return
+            val mainC2 = Camera2CameraInfo.from(main)
+            mainCameraId = mainC2.cameraId
+            val mainFocal = mainC2.getCameraCharacteristic(
+                CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS,
+            )?.minOrNull() ?: return
+
+            val candidate = provider.availableCameraInfos
+                .filter { it.lensFacing == CameraSelector.LENS_FACING_BACK }
+                .mapNotNull { info ->
+                    val c2 = Camera2CameraInfo.from(info)
+                    val focal = c2.getCameraCharacteristic(
+                        CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS,
+                    )?.minOrNull() ?: return@mapNotNull null
+                    if (focal < mainFocal * 0.9f) c2.cameraId to focal else null
+                }
+                .minByOrNull { it.second }
+
+            if (candidate != null) {
+                ultraWideId = candidate.first
+                ultraWideRatio = (candidate.second / mainFocal).coerceIn(0.4f, 0.9f)
+            }
+            Log.i(
+                "KromaGL",
+                "lenses: main=$mainCameraId (${mainFocal}mm) ultraWide=$ultraWideId ratio=$ultraWideRatio",
+            )
+        } catch (t: Throwable) {
+            Log.w("KromaGL", "lens discovery failed: ${t.message}")
+        }
+    }
+
+    /** Switches the bound physical lens (used by the ultra-wide stop). */
+    fun useUltraWide(ultraWide: Boolean) {
+        val target = if (ultraWide) ultraWideId else mainCameraId
+        if (target == null || target == activeCameraId) return
+        activeCameraId = target
+        bind()
     }
 
     /** Real optical/digital zoom, clamped to what the lens supports. */
@@ -214,13 +302,24 @@ class CameraSession(private val context: Context) {
             return
         }
         val stops = mutableListOf<Float>()
-        if (z.minZoomRatio < 0.95f) stops += z.minZoomRatio
-        stops += 1f
-        listOf(2f, 4f, 8f).forEach { if (it <= z.maxZoomRatio + 0.01f) stops += it }
+        // Sub-1x stop first when the device has an ultra-wide lens.
+        ultraWideRatio?.let { stops += (kotlin.math.round(it * 10f) / 10f) }
+        // Integer stops across the device's range, so users can scroll for higher zoom.
+        val first = maxOf(1, ceil(z.minZoomRatio.toDouble()).toInt())
+        val last = z.maxZoomRatio.toInt()
+        for (i in first..last) stops += i.toFloat()
         if (stops.last() < z.maxZoomRatio - 0.01f) stops += z.maxZoomRatio
         zoomStops = stops.distinct().sorted()
         Log.i("KromaGL", "zoom stops = $zoomStops (min=${z.minZoomRatio}, max=${z.maxZoomRatio})")
         onZoomStopsChanged?.invoke(zoomStops)
+    }
+
+    /** Real recording quality change (rebinds the recorder so it takes effect). */
+    fun setVideoQuality(quality: Quality) {
+        if (quality == videoQuality) return
+        videoQuality = quality
+        onVideoQualityChanged?.invoke(quality)
+        if (videoEnabled) bind()
     }
 
     /** Real torch/flash mode: OFF → ON → AUTO. */

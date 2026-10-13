@@ -23,6 +23,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.camera.core.AspectRatio
 import androidx.camera.core.ImageCapture
+import androidx.camera.video.Quality
 import com.kroma.app.camera.GlesStyleView
 import com.kroma.app.camera.StyleParams
 import androidx.compose.foundation.Canvas
@@ -35,12 +36,16 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -92,6 +97,7 @@ import com.kroma.app.ui.ProControlBar
 import com.kroma.app.ui.ShutterButton
 import com.kroma.app.ui.StyleDotsButton
 import com.kroma.app.ui.ThumbnailButton
+import com.kroma.app.ui.VideoTopBar
 import com.kroma.app.ui.ViewfinderGrid
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -138,6 +144,7 @@ private fun KromaApp() {
     var stylesOpen by remember { mutableStateOf(false) }
     var calibrationOpen by remember { mutableStateOf(false) }
     var lens by remember { mutableStateOf(0) }
+    var liveZoom by remember { mutableStateOf(1f) }
     var zoomStops by remember { mutableStateOf(listOf(1f)) }
     var mode by remember { mutableStateOf(CameraMode.PHOTO) }
     var focusLocked by remember { mutableStateOf(false) }
@@ -149,6 +156,7 @@ private fun KromaApp() {
     var aspect by remember { mutableStateOf(0) }
     var proMode by remember { mutableStateOf(false) }
     var thumb by remember { mutableStateOf<Bitmap?>(null) }
+    var videoQuality by remember { mutableStateOf(Quality.HD) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(granted, glReady) {
@@ -160,12 +168,14 @@ private fun KromaApp() {
     // Push the live style state to the GL preview pass every time it changes.
     LaunchedEffect(state) { glView.setStyle(StyleParams.from(state)) }
     LaunchedEffect(Unit) { session.onZoomStopsChanged = { zoomStops = it } }
+    LaunchedEffect(Unit) { session.onVideoQualityChanged = { videoQuality = it } }
 
     // Keep the picker on the 1x stop when the device's zoom range arrives.
     LaunchedEffect(zoomStops) {
         lens = zoomStops.indexOfFirst { it in 0.99f..1.01f }.coerceAtLeast(0)
+        android.util.Log.i("KromaZoom", "MainActivity lens=$lens stops=$zoomStops")
     }
-    LaunchedEffect(lens, zoomStops) { session.setZoom(zoomStops.getOrElse(lens) { 1f }) }
+    // Zoom is now driven by the picker (continuous during scrub, exact on chip tap).
     LaunchedEffect(message) {
         message?.let {
             Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
@@ -203,8 +213,16 @@ private fun KromaApp() {
             }
         }
 
-        Column(Modifier.fillMaxSize().systemBarsPadding()) {
+        Column(Modifier.fillMaxSize().statusBarsPadding()) {
             Spacer(Modifier.height(6.dp))
+            if (mode == CameraMode.VIDEO) {
+                VideoTopBar(
+                    quality = videoQuality,
+                    recording = recording,
+                    onQuality = { session.setVideoQuality(it) },
+                )
+                Spacer(Modifier.height(12.dp))
+            }
             if (proMode) {
                 ProControlBar()
                 Spacer(Modifier.height(12.dp))
@@ -240,9 +258,47 @@ private fun KromaApp() {
                     Spacer(Modifier.height(10.dp))
                 }
 
-                LensPicker(stops = zoomStops, selected = lens, onSelect = { lens = it })
-                Spacer(Modifier.height(14.dp))
+                // Zoom picker floats ABOVE the glass bar (hidden in VIDEO mode).
+                if (mode != CameraMode.VIDEO) {
+                    LensPicker(
+                        stops = zoomStops,
+                        selected = lens,
+                        liveZoom = liveZoom,
+                        onSelect = { i ->
+                            val z = zoomStops.getOrElse(i) { 1f }
+                            if (z < 1f) {
+                                // Sub-1x stop = switch to the ultra-wide lens.
+                                session.useUltraWide(true)
+                            } else {
+                                session.useUltraWide(false)
+                                session.setZoom(z)
+                            }
+                            liveZoom = z
+                            lens = i
+                        },
+                        onZoom = { z ->
+                            // Continuous scrub: drives the actual camera zoom live (main lens).
+                            val clamped = z.coerceAtLeast(1f)
+                            session.useUltraWide(false)
+                            liveZoom = clamped
+                            session.setZoom(clamped)
+                            lens = zoomStops.indices.minByOrNull {
+                                kotlin.math.abs(zoomStops[it] - clamped)
+                            } ?: 0
+                        },
+                    )
+                    Spacer(Modifier.height(10.dp))
+                }
 
+                // Dark glass bar: extends to the very bottom of the device (under the nav bar).
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xA6000000))
+                        .windowInsetsPadding(WindowInsets.navigationBars)
+                        .padding(top = 14.dp, bottom = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 26.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -299,8 +355,9 @@ private fun KromaApp() {
                     ModeSelector(selected = mode, onSelect = { mode = it })
                     FlipButton(onClick = { session.flipLens() })
                 }
+                }
 
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(10.dp))
             }
         }
     }
