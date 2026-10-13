@@ -10,14 +10,38 @@ data class StyleState(
     val padTone: Float = 0f,    // [-100, 100]  (Y axis)
     val intensity: Float = 1f,  // [0, 1]
     val skinAlpha: Float = 1f,  // skin-mask confidence [0, 1]
+    // --- Texture overlays (spec §5) ---
+    val textureMode: TextureMode = TextureMode.STANDARD,
+    val textureIntensity: Float = 0f,  // [0, 1] — applies to the selected mode
+    val filmGrainEnabled: Boolean = false,
 ) {
     val preset: Preset get() = Presets.byId(presetId)
 
-    /** The "↺" reset action — restores the puck to the preset's default anchor. */
-    fun reset(): StyleState = copy(padColor = 0f, padTone = 0f)
+    /** Effective Tone coordinate the shader receives: pad + preset anchor. */
+    val effectiveTone: Float get() = (padTone + preset.anchorY).coerceIn(-100f, 100f)
 
-    /** Whether the puck has deviated from the preset baseline anchor. */
+    /** Effective Color coordinate the shader receives: pad + preset anchor. */
+    val effectiveColor: Float get() = (padColor + preset.anchorX).coerceIn(-100f, 100f)
+
+    /** Whether the puck sits on the preset's baseline anchor (drives the ↺ visibility). */
     val isAtAnchor: Boolean get() = padColor == 0f && padTone == 0f
+
+    /** Whether *anything* deviates from the preset baseline (pad or texture). */
+    val isAtDefaults: Boolean
+        get() = isAtAnchor &&
+            textureMode == TextureMode.STANDARD && textureIntensity == 0f && !filmGrainEnabled
+
+    /** The "↺" reset action — restores the preset baseline (puck + texture). */
+    fun reset(): StyleState = copy(
+        padColor = 0f,
+        padTone = 0f,
+        textureMode = TextureMode.STANDARD,
+        textureIntensity = 0f,
+        filmGrainEnabled = false,
+    )
+
+    /** Clears only the 2D-pad position. */
+    fun resetPuck(): StyleState = copy(padColor = 0f, padTone = 0f)
 }
 
 /**
