@@ -1,0 +1,10 @@
+{
+  // Kroma defers Gradle builds (the Gradle distribution + dependency cache are not
+  // present, and disk is tight). Turn OFF automatic Gradle project syncing/import so
+  // the IDE extension does not trigger the wrapper download on its own.
+  //
+  // Re-enable (set to "on" / true) when you actually want the IDE to sync & build.
+  "gradle.autoDetect": "off",
+  "gradle.nestedProjects": false,
+  "java.import.gradle.enabled": false
+}
