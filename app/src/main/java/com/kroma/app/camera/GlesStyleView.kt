@@ -26,6 +26,10 @@ data class StyleParams(
     val presetId: Int,
     val beta: Float,
     val hueBiasRad: Float,
+    val shadowToe: Float = 0f,
+    val textureMode: Int = 0,
+    val textureIntensity: Float = 0f,
+    val filmGrainEnabled: Boolean = false,
 ) {
     companion object {
         fun from(state: StyleState): StyleParams {
@@ -39,6 +43,10 @@ data class StyleParams(
                 presetId = p.id,
                 beta = p.beta,
                 hueBiasRad = p.hueBiasRad,
+                shadowToe = p.shadowToe,
+                textureMode = state.textureMode.ordinal,
+                textureIntensity = state.textureIntensity,
+                filmGrainEnabled = state.filmGrainEnabled,
             )
         }
     }
@@ -72,13 +80,12 @@ class GlesStyleView(context: Context) : GLSurfaceView(context) {
 
 private class StyleRenderer(private val context: Context) : GLSurfaceView.Renderer {
 
-    @Volatile var params = StyleParams(0f, 0f, 0f, 0f, 1f, 5, 0f, 0f)
+    @Volatile var params = StyleParams(0f, 0f, 0f, 0f, 1f, 5, 0f, 0f, 0f)
     var onReady: (() -> Unit)? = null
 
     private val lock = Any()
     private var textureId = 0
     private var surfaceTexture: SurfaceTexture? = null
-    private var surface: Surface? = null
     private var frameAvailable = false
     private var hasFrame = false
     private val texMatrix = FloatArray(16)
@@ -95,7 +102,13 @@ private class StyleRenderer(private val context: Context) : GLSurfaceView.Render
     private var uPresetId = 0
     private var uBetaPreset = 0
     private var uHueBias = 0
+    private var uShadowToe = 0
     private var uCropScale = 0
+    private var uTextureMode = 0
+    private var uTextureIntensity = 0
+    private var uFilmGrainEnabled = 0
+    private var uTime = 0
+    private val startTimeNs = System.nanoTime()
     private var maskTexture = 0
 
     private var viewW = 0
@@ -112,19 +125,23 @@ private class StyleRenderer(private val context: Context) : GLSurfaceView.Render
 
     val surfaceProvider = Preview.SurfaceProvider { request ->
         val s = synchronized(lock) {
+            val st = surfaceTexture ?: return@synchronized null
             // Size the GL buffer to exactly what CameraX asks for — without this the camera
             // produces a tiny default stream and the preview looks blocky.
-            surfaceTexture?.setDefaultBufferSize(
+            st.setDefaultBufferSize(
                 request.resolution.width,
                 request.resolution.height,
             )
             bufW = request.resolution.width
             bufH = request.resolution.height
+            logCrop = true
             Log.i("KromaGL", "camera preview resolution = ${bufW}x$bufH")
-            surface
+            Surface(st)
         }
         if (s != null) {
-            request.provideSurface(s, ContextCompat.getMainExecutor(context)) { }
+            request.provideSurface(s, ContextCompat.getMainExecutor(context)) {
+                s.release()
+            }
         } else {
             request.willNotProvideSurface()
         }
@@ -143,7 +160,12 @@ private class StyleRenderer(private val context: Context) : GLSurfaceView.Render
         uPresetId = GLES30.glGetUniformLocation(program, "u_PresetId")
         uBetaPreset = GLES30.glGetUniformLocation(program, "u_BetaPreset")
         uHueBias = GLES30.glGetUniformLocation(program, "u_HueBiasAngle")
+        uShadowToe = GLES30.glGetUniformLocation(program, "u_ShadowToe")
         uCropScale = GLES30.glGetUniformLocation(program, "u_CropScale")
+        uTextureMode = GLES30.glGetUniformLocation(program, "u_TextureMode")
+        uTextureIntensity = GLES30.glGetUniformLocation(program, "u_TextureIntensity")
+        uFilmGrainEnabled = GLES30.glGetUniformLocation(program, "u_FilmGrainEnabled")
+        uTime = GLES30.glGetUniformLocation(program, "u_Time")
 
         maskTexture = createWhiteTexture()
 
@@ -160,16 +182,18 @@ private class StyleRenderer(private val context: Context) : GLSurfaceView.Render
             surfaceTexture = SurfaceTexture(textureId).apply {
                 setOnFrameAvailableListener { synchronized(lock) { frameAvailable = true } }
             }
-            surface = Surface(surfaceTexture)
         }
 
-        onReady?.invoke()
+        ContextCompat.getMainExecutor(context).execute {
+            onReady?.invoke()
+        }
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
         GLES30.glViewport(0, 0, width, height)
         viewW = width
         viewH = height
+        logCrop = true
         Log.i("KromaGL", "view = ${width}x$height")
     }
 
@@ -208,6 +232,12 @@ private class StyleRenderer(private val context: Context) : GLSurfaceView.Render
         GLES30.glUniform1i(uPresetId, p.presetId)
         GLES30.glUniform1f(uBetaPreset, p.beta)
         GLES30.glUniform1f(uHueBias, p.hueBiasRad)
+        GLES30.glUniform1f(uShadowToe, p.shadowToe)
+        GLES30.glUniform1i(uTextureMode, p.textureMode)
+        GLES30.glUniform1f(uTextureIntensity, p.textureIntensity)
+        GLES30.glUniform1i(uFilmGrainEnabled, if (p.filmGrainEnabled) 1 else 0)
+        val elapsedSec = ((System.nanoTime() - startTimeNs) / 1_000_000_000.0).toFloat()
+        GLES30.glUniform1f(uTime, elapsedSec)
 
         // Centre-crop so the camera image keeps its aspect ratio inside the viewport.
         val crop = cropScale()
@@ -237,10 +267,9 @@ private class StyleRenderer(private val context: Context) : GLSurfaceView.Render
      * Per-axis UV crop (<= 1) that centre-crops the camera image into the viewport, preserving its
      * aspect ratio (FILL_CENTER).
      *
-     * Important: [u_CropScale] is applied *after* `u_TexMatrix`, i.e. in **buffer** UV space. When
-     * the sensor buffer is landscape but the screen is portrait, the transform rotates the axes —
-     * so a crop computed in display space must be swapped before being handed to the shader.
-     * (Getting this wrong squashes the image horizontally, which reads as "narrow".)
+     * [u_CropScale] is applied to `a_TexCoord` centered around (0.5, 0.5) before `u_TexMatrix`
+     * (i.e. in display UV space). Because display coordinates are scaled before the camera matrix rotates
+     * them into buffer coordinates, the aspect ratio crop factor is applied along the display axes.
      */
     private fun cropScale(): FloatArray {
         if (viewW <= 0 || viewH <= 0 || bufW <= 0 || bufH <= 0) return floatArrayOf(1f, 1f)

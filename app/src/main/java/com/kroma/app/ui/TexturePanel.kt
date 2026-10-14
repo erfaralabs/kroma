@@ -114,7 +114,7 @@ fun TexturePanel(
         Spacer(Modifier.height(12.dp))
 
         Text(
-            "Texture is applied after taking a photo.",
+            "Live texture preview & capture active.",
             color = KromaColors.TextSecondary,
             fontSize = 12.sp,
             textAlign = TextAlign.Center,

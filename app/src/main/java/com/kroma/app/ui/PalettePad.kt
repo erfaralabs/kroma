@@ -1,7 +1,6 @@
 package com.kroma.app.ui
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -10,8 +9,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -32,49 +34,65 @@ fun PalettePad(
     onPadChange: (color: Float, tone: Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val anchorX = state.preset.anchorX
-    val anchorY = state.preset.anchorY
+    val currentOnPadChange by rememberUpdatedState(onPadChange)
+    val currentAnchorX by rememberUpdatedState(state.preset.anchorX)
+    val currentAnchorY by rememberUpdatedState(state.preset.anchorY)
+    val isMonochrome by rememberUpdatedState(state.preset.monochrome)
 
     fun toPad(sizeW: Float, sizeH: Float, pos: Offset): Pair<Float, Float> {
         val ex = ((pos.x / sizeW) * 200f - 100f).coerceIn(-100f, 100f)
         val ey = (-((pos.y / sizeH) * 200f - 100f)).coerceIn(-100f, 100f) // up = +tone
-        return (ex - anchorX) to (ey - anchorY)
+        val padColor = if (isMonochrome) 0f else (ex - currentAnchorX)
+        val padTone = ey - currentAnchorY
+        return padColor to padTone
     }
 
-    val padShape = RoundedCornerShape(20.dp)
+    val padShape = RoundedCornerShape(22.dp)
 
     Box(
         modifier = modifier
-            .size(140.dp)
+            .size(110.dp)
             .clip(padShape)
-            .background(
-                Brush.linearGradient(
-                    colors = listOf(
-                        Color(0xFF222834), // cool dark bottom-left
-                        Color(0xFF5A4440), // mid transition
-                        Color(0xFF9E6454), // warm terracotta top-right
-                    ),
-                    start = Offset(0f, 400f),
-                    end = Offset(400f, 0f),
-                ),
-            )
-            .border(1.dp, Color(0x38FFFFFF), padShape)
-            .pointerInput(state.presetId) {
+            .drawBehind {
+                val gradient = if (isMonochrome) {
+                    Brush.linearGradient(
+                        colors = listOf(
+                            Color(0xFF9AA4B0), // slate top-left
+                            Color(0xFF14171A), // charcoal bottom
+                        ),
+                        start = Offset(0f, 0f),
+                        end = Offset(0f, size.height),
+                    )
+                } else {
+                    Brush.linearGradient(
+                        colors = listOf(
+                            Color(0xFF222834), // cool dark bottom-left
+                            Color(0xFF5A4440), // mid transition
+                            Color(0xFF9E6454), // warm terracotta top-right
+                        ),
+                        start = Offset(0f, size.height),
+                        end = Offset(size.width, 0f),
+                    )
+                }
+                drawRect(gradient)
+            }
+            .border(1.dp, Color(0x45FFFFFF), padShape)
+            .pointerInput(Unit) {
                 detectDragGestures(
                     onDragStart = { pos ->
                         val (c, t) = toPad(size.width.toFloat(), size.height.toFloat(), pos)
-                        onPadChange(c, t)
+                        currentOnPadChange(c, t)
                     },
                     onDrag = { change, _ ->
                         val (c, t) = toPad(size.width.toFloat(), size.height.toFloat(), change.position)
-                        onPadChange(c, t)
+                        currentOnPadChange(c, t)
                     },
                 )
             }
-            .pointerInput(state.presetId) {
+            .pointerInput(Unit) {
                 detectTapGestures { pos ->
                     val (c, t) = toPad(size.width.toFloat(), size.height.toFloat(), pos)
-                    onPadChange(c, t)
+                    currentOnPadChange(c, t)
                 }
             },
     ) {
@@ -84,36 +102,31 @@ fun PalettePad(
             fun px(v: Float) = (v + 100f) / 200f * w
             fun py(v: Float) = (1f - (v + 100f) / 200f) * h
 
-            // Subtle dotted matrix or dots at quadrants
-            val dotColor = Color(0x18FFFFFF)
-            for (gx in -2..2) {
-                for (gy in -2..2) {
-                    if (gx != 0 || gy != 0) {
-                        drawCircle(dotColor, radius = 1.2f, center = Offset(px(gx * 40f), py(gy * 40f)))
-                    }
+            // Clean 7x7 uniform dot grid
+            val dotColor = Color(0x38FFFFFF)
+            val dotRadius = 1.3.dp.toPx()
+            val step = 27f
+            for (gx in -3..3) {
+                for (gy in -3..3) {
+                    drawCircle(dotColor, radius = dotRadius, center = Offset(px(gx * step), py(gy * step)))
                 }
             }
 
-            // Dotted crosshair through the origin (0, 0)
-            val dashEffect = PathEffect.dashPathEffect(floatArrayOf(5f, 5f), 0f)
-            val hairColor = Color(0x38FFFFFF)
-            drawLine(hairColor, Offset(px(0f), 0f), Offset(px(0f), h), strokeWidth = 1.2f, pathEffect = dashEffect)
-            drawLine(hairColor, Offset(0f, py(0f)), Offset(w, py(0f)), strokeWidth = 1.2f, pathEffect = dashEffect)
-
             // Preset anchor marker (small solid dot at default anchor)
-            val ax = px(anchorX)
-            val ay = py(anchorY)
-            drawCircle(Color(0xCCFFFFFF), radius = 2.5.dp.toPx(), center = Offset(ax, ay))
+            val ax = px(currentAnchorX)
+            val ay = py(currentAnchorY)
+            drawCircle(Color(0xCCFFFFFF), radius = 2.dp.toPx(), center = Offset(ax, ay))
 
             // Movable puck at effective coordinate (anchor + pad)
             val cx = px(state.effectiveColor)
             val cy = py(state.effectiveTone)
-            // Soft shadow under puck
-            drawCircle(Color(0x59000000), radius = 12.dp.toPx(), center = Offset(cx, cy + 2f))
+            // Soft shadow & glow under puck
+            drawCircle(Color(0x59000000), radius = 10.dp.toPx(), center = Offset(cx, cy + 1.5.dp.toPx()))
+            drawCircle(Color(0x40FFFFFF), radius = 9.dp.toPx(), center = Offset(cx, cy))
             // Solid white puck
-            drawCircle(Color.White, radius = 9.dp.toPx(), center = Offset(cx, cy))
+            drawCircle(Color.White, radius = 7.5.dp.toPx(), center = Offset(cx, cy))
             // Subtle hairline border
-            drawCircle(Color(0x33000000), radius = 9.dp.toPx(), center = Offset(cx, cy), style = Stroke(1.dp.toPx()))
+            drawCircle(Color(0x33000000), radius = 7.5.dp.toPx(), center = Offset(cx, cy), style = Stroke(1.dp.toPx()))
         }
     }
 }

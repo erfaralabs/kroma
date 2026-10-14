@@ -36,6 +36,7 @@ import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
+import java.io.BufferedOutputStream
 import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -67,6 +68,12 @@ class CameraSession(private val context: Context) {
 
     /** Real Camera2 white balance mode (AWB / Daylight / Cloudy / Shade / Tungsten / Fluorescent). */
     var whiteBalanceMode: Int = CaptureRequest.CONTROL_AWB_MODE_AUTO
+        private set
+
+    var shutterSpeed: String = "AUTO"
+        private set
+
+    var focusMode: String = "AF"
         private set
 
     /** Physical camera still capture resolution tiers (MP). */
@@ -195,9 +202,7 @@ class CameraSession(private val context: Context) {
         discoverLenses(p)
         computeZoomStops()
         camera?.cameraInfo?.let { discoverResolutions(it) }
-        if (whiteBalanceMode != CaptureRequest.CONTROL_AWB_MODE_AUTO) {
-            setWhiteBalanceMode(whiteBalanceMode)
-        }
+        applyCamera2Options()
     }
 
     /**
@@ -364,6 +369,13 @@ class CameraSession(private val context: Context) {
     /** Real optical/digital zoom, clamped to what the lens supports. */
     fun setZoom(ratio: Float) {
         val state = camera?.cameraInfo?.zoomState?.value ?: return
+        if (lensFacing == CameraSelector.LENS_FACING_BACK && state.minZoomRatio >= 0.99f) {
+            if (ratio < 0.95f) {
+                useUltraWide(true)
+            } else {
+                useUltraWide(false)
+            }
+        }
         camera?.cameraControl?.setZoomRatio(ratio.coerceIn(state.minZoomRatio, state.maxZoomRatio))
     }
 
@@ -478,12 +490,7 @@ class CameraSession(private val context: Context) {
     @androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
     fun setWhiteBalanceMode(awbMode: Int) {
         whiteBalanceMode = awbMode
-        val ctrl = camera?.cameraControl ?: return
-        val c2ctrl = Camera2CameraControl.from(ctrl)
-        val options = CaptureRequestOptions.Builder()
-            .setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, awbMode)
-            .build()
-        c2ctrl.setCaptureRequestOptions(options)
+        applyCamera2Options()
     }
 
     /** Real exposure compensation index (device EV steps, usually ±6 around 0). */
@@ -509,10 +516,28 @@ class CameraSession(private val context: Context) {
     /** Real Pro Shutter speed control (AUTO or manual exposure time). */
     @androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
     fun setShutterSpeed(shutter: String) {
+        shutterSpeed = shutter
+        applyCamera2Options()
+    }
+
+    /** Real Pro Focus mode control (AF vs MF manual focus distance). */
+    @androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
+    fun setFocusMode(mode: String) {
+        focusMode = mode
+        applyCamera2Options()
+    }
+
+    @androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
+    private fun applyCamera2Options() {
         val ctrl = camera?.cameraControl ?: return
         val c2ctrl = Camera2CameraControl.from(ctrl)
         val builder = CaptureRequestOptions.Builder()
-        when (shutter) {
+
+        // 1. White balance
+        builder.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, whiteBalanceMode)
+
+        // 2. Shutter speed / AE mode
+        when (shutterSpeed) {
             "AUTO" -> {
                 builder.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
             }
@@ -552,21 +577,15 @@ class CameraSession(private val context: Context) {
                 builder.setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, 200)
             }
         }
-        c2ctrl.setCaptureRequestOptions(builder.build())
-    }
 
-    /** Real Pro Focus mode control (AF vs MF manual focus distance). */
-    @androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
-    fun setFocusMode(mode: String) {
-        val ctrl = camera?.cameraControl ?: return
-        val c2ctrl = Camera2CameraControl.from(ctrl)
-        val builder = CaptureRequestOptions.Builder()
-        if (mode == "MF") {
+        // 3. Focus mode
+        if (focusMode == "MF") {
             builder.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
             builder.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, 5.0f) // Close portrait focus
         } else {
             builder.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
         }
+
         c2ctrl.setCaptureRequestOptions(builder.build())
     }
 
@@ -635,21 +654,40 @@ class CameraSession(private val context: Context) {
         isRaw: Boolean = false,
     ) {
         val cr = context.contentResolver
-        val padLen = Math.hypot(state.padColor.toDouble(), state.padTone.toDouble())
-        val isDefaultStandard = state.presetId == Presets.NATIVE_ID && padLen < 0.001
+        val isDefaultStandard = state.presetId == Presets.NATIVE_ID && state.isAtDefaults
+
+        val exifTagsToPreserve = listOf(
+            android.media.ExifInterface.TAG_MAKE,
+            android.media.ExifInterface.TAG_MODEL,
+            android.media.ExifInterface.TAG_DATETIME,
+            android.media.ExifInterface.TAG_EXPOSURE_TIME,
+            android.media.ExifInterface.TAG_F_NUMBER,
+            android.media.ExifInterface.TAG_ISO_SPEED_RATINGS,
+            android.media.ExifInterface.TAG_FOCAL_LENGTH,
+            android.media.ExifInterface.TAG_WHITE_BALANCE,
+            android.media.ExifInterface.TAG_FLASH,
+        )
+        val preservedExif = mutableMapOf<String, String>()
 
         try {
-            // Read orientation from original JPEG EXIF metadata
-            val orientation = try {
+            // Read orientation and standard EXIF metadata from original JPEG before overwriting
+            var orientation = android.media.ExifInterface.ORIENTATION_NORMAL
+            try {
                 cr.openInputStream(uri)?.use { stream ->
                     val exif = android.media.ExifInterface(stream)
-                    exif.getAttributeInt(
+                    orientation = exif.getAttributeInt(
                         android.media.ExifInterface.TAG_ORIENTATION,
                         android.media.ExifInterface.ORIENTATION_NORMAL,
                     )
-                } ?: android.media.ExifInterface.ORIENTATION_NORMAL
+                    for (tag in exifTagsToPreserve) {
+                        val value = exif.getAttribute(tag)
+                        if (value != null) {
+                            preservedExif[tag] = value
+                        }
+                    }
+                }
             } catch (_: Throwable) {
-                android.media.ExifInterface.ORIENTATION_NORMAL
+                orientation = android.media.ExifInterface.ORIENTATION_NORMAL
             }
 
             val rawBmp = cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) } ?: return
@@ -710,6 +748,9 @@ class CameraSession(private val context: Context) {
                 try {
                     cr.openFileDescriptor(uri, "rw")?.use { pfd ->
                         val exifOut = android.media.ExifInterface(pfd.fileDescriptor)
+                        for ((tag, value) in preservedExif) {
+                            exifOut.setAttribute(tag, value)
+                        }
                         exifOut.setAttribute(
                             android.media.ExifInterface.TAG_ORIENTATION,
                             android.media.ExifInterface.ORIENTATION_NORMAL.toString(),
@@ -720,12 +761,6 @@ class CameraSession(private val context: Context) {
                         )
                         exifOut.saveAttributes()
                     }
-
-                    // Publish the photo so it immediately shows up in the gallery
-                    val cv = ContentValues().apply {
-                        put(MediaStore.Images.Media.IS_PENDING, 0)
-                    }
-                    cr.update(uri, cv, null, null)
                 } catch (t: Throwable) {
                     Log.w("KromaStyle", "Could not write EXIF orientation / XMP: ${t.message}")
                 }
@@ -733,6 +768,17 @@ class CameraSession(private val context: Context) {
             Log.i("KromaStyle", "Successfully styled and saved photo with preset=${state.preset.name} aspect=${aspect.label}")
         } catch (t: Throwable) {
             Log.e("KromaStyle", "Error applying style/aspect to captured photo", t)
+        } finally {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                try {
+                    val cv = ContentValues().apply {
+                        put(MediaStore.Images.Media.IS_PENDING, 0)
+                    }
+                    cr.update(uri, cv, null, null)
+                } catch (t: Throwable) {
+                    Log.w("KromaStyle", "Failed to clear IS_PENDING on uri: $uri", t)
+                }
+            }
         }
     }
 
@@ -834,8 +880,10 @@ class CameraSession(private val context: Context) {
             }
         }
         val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return null
-        context.contentResolver.openOutputStream(uri)?.use { out ->
-            writeLinearDng(out, bitmap)
+        context.contentResolver.openOutputStream(uri)?.let { rawOut ->
+            BufferedOutputStream(rawOut, 65536).use { out ->
+                writeLinearDng(out, bitmap)
+            }
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val cv = ContentValues().apply {
@@ -849,18 +897,7 @@ class CameraSession(private val context: Context) {
     private fun writeLinearDng(out: OutputStream, bitmap: Bitmap) {
         val width = bitmap.width
         val height = bitmap.height
-        val pixelCount = width * height
-        val pixels = IntArray(pixelCount)
-        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-
-        val rgbBytes = ByteArray(pixelCount * 3)
-        var byteIdx = 0
-        for (i in 0 until pixelCount) {
-            val p = pixels[i]
-            rgbBytes[byteIdx++] = ((p shr 16) and 0xFF).toByte()
-            rgbBytes[byteIdx++] = ((p shr 8) and 0xFF).toByte()
-            rgbBytes[byteIdx++] = (p and 0xFF).toByte()
-        }
+        val totalRgbBytes = width * height * 3
 
         // TIFF Header: "II" (Intel little-endian), magic 42, IFD0 offset = 8
         val header = byteArrayOf(
@@ -870,11 +907,19 @@ class CameraSession(private val context: Context) {
         )
         out.write(header)
 
-        val numTags = 13
+        val numTags = 22
         val ifdSize = 2 + numTags * 12 + 4
         val dataStart = 8 + ifdSize
+        val extraDataSize = 136
+        val stripOffset = dataStart + extraDataSize
+
         val bitsOffset = dataStart
-        val stripOffset = dataStart + 8
+        val xResOffset = dataStart + 8
+        val yResOffset = dataStart + 16
+        val blackLevelOffset = dataStart + 24
+        val whiteLevelOffset = dataStart + 32
+        val colorMatrixOffset = dataStart + 40
+        val asShotNeutralOffset = dataStart + 112
 
         val bb = ByteBuffer.allocate(ifdSize).order(ByteOrder.LITTLE_ENDIAN)
         bb.putShort(numTags.toShort())
@@ -886,41 +931,110 @@ class CameraSession(private val context: Context) {
             bb.putInt(value)
         }
 
-        putTag(254, 4, 1, 0) // NewSubfileType
+        // All IFD tags in strictly ascending numerical order
+        putTag(254, 4, 1, 0) // NewSubfileType: 0 (Full-resolution image)
         putTag(256, 4, 1, width) // ImageWidth
         putTag(257, 4, 1, height) // ImageLength
-        putTag(258, 3, 3, bitsOffset) // BitsPerSample
-        putTag(259, 3, 1, 1) // Compression: Uncompressed
-        putTag(262, 3, 1, 2) // PhotometricInterpretation: RGB
+        putTag(258, 3, 3, bitsOffset) // BitsPerSample: [8, 8, 8]
+        putTag(259, 3, 1, 1) // Compression: 1 (Uncompressed)
+        putTag(262, 3, 1, 2) // PhotometricInterpretation: 2 (RGB)
         putTag(273, 4, 1, stripOffset) // StripOffsets
+        putTag(274, 3, 1, 1) // Orientation: 1 (Top-Left)
         putTag(277, 3, 1, 3) // SamplesPerPixel: 3
         putTag(278, 4, 1, height) // RowsPerStrip
-        putTag(279, 4, 1, rgbBytes.size) // StripByteCounts
-        putTag(284, 3, 1, 1) // PlanarConfiguration: Chunky
-        // DNGVersion: [1, 4, 0, 0]
+        putTag(279, 4, 1, totalRgbBytes) // StripByteCounts
+        putTag(282, 5, 1, xResOffset) // XResolution: 72/1
+        putTag(283, 5, 1, yResOffset) // YResolution: 72/1
+        putTag(284, 3, 1, 1) // PlanarConfiguration: 1 (Chunky)
+        putTag(296, 3, 1, 2) // ResolutionUnit: 2 (Inches)
+
+        // Tag 50706: DNGVersion [1, 4, 0, 0]
         bb.putShort(50706.toShort())
         bb.putShort(1.toShort())
         bb.putInt(4)
         bb.put(1.toByte()); bb.put(4.toByte()); bb.put(0.toByte()); bb.put(0.toByte())
-        // DNGBackwardVersion: [1, 1, 0, 0]
+
+        // Tag 50707: DNGBackwardVersion [1, 1, 0, 0]
         bb.putShort(50707.toShort())
         bb.putShort(1.toShort())
         bb.putInt(4)
         bb.put(1.toByte()); bb.put(1.toByte()); bb.put(0.toByte()); bb.put(0.toByte())
 
+        putTag(50714, 3, 3, blackLevelOffset) // BlackLevel: [0, 0, 0]
+        putTag(50717, 3, 3, whiteLevelOffset) // WhiteLevel: [255, 255, 255]
+        putTag(50721, 10, 9, colorMatrixOffset) // ColorMatrix1: 9 SRATIONALs
+        putTag(50728, 5, 3, asShotNeutralOffset) // AsShotNeutral: [(1,1), (1,1), (1,1)]
+        putTag(50778, 3, 1, 21) // CalibrationIlluminant1: 21 (D65)
+
         bb.putInt(0) // Next IFD = 0
         out.write(bb.array())
 
-        // BitsPerSample array (8, 8, 8) + 2 bytes padding to 4-byte boundary
-        val extraData = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
+        val extraData = ByteBuffer.allocate(extraDataSize).order(ByteOrder.LITTLE_ENDIAN)
+
+        // Tag 258: BitsPerSample [8, 8, 8] + 2 bytes padding
         extraData.putShort(8.toShort())
         extraData.putShort(8.toShort())
         extraData.putShort(8.toShort())
         extraData.putShort(0.toShort())
+
+        // Tag 282: XResolution (72/1)
+        extraData.putInt(72)
+        extraData.putInt(1)
+
+        // Tag 283: YResolution (72/1)
+        extraData.putInt(72)
+        extraData.putInt(1)
+
+        // Tag 50714: BlackLevel [0, 0, 0] + 2 bytes padding
+        extraData.putShort(0.toShort())
+        extraData.putShort(0.toShort())
+        extraData.putShort(0.toShort())
+        extraData.putShort(0.toShort())
+
+        // Tag 50717: WhiteLevel [255, 255, 255] + 2 bytes padding
+        extraData.putShort(255.toShort())
+        extraData.putShort(255.toShort())
+        extraData.putShort(255.toShort())
+        extraData.putShort(0.toShort())
+
+        // Tag 50721: ColorMatrix1 (9 SRATIONALs for sRGB/D65)
+        val colorMatrix = intArrayOf(
+            32406, 10000,
+            -15372, 10000,
+            -4986, 10000,
+            -9689, 10000,
+            18758, 10000,
+            415, 10000,
+            556, 10000,
+            -2040, 10000,
+            10570, 10000,
+        )
+        for (v in colorMatrix) {
+            extraData.putInt(v)
+        }
+
+        // Tag 50728: AsShotNeutral [(1,1), (1,1), (1,1)]
+        for (i in 0 until 3) {
+            extraData.putInt(1)
+            extraData.putInt(1)
+        }
+
         out.write(extraData.array())
 
-        // Pixel bytes
-        out.write(rgbBytes)
+        // Stream pixel bytes row-by-row using reusable single-row buffers to prevent OOM
+        val rowPixels = IntArray(width)
+        val rowRgbBytes = ByteArray(width * 3)
+        for (y in 0 until height) {
+            bitmap.getPixels(rowPixels, 0, width, 0, y, width, 1)
+            var byteIdx = 0
+            for (x in 0 until width) {
+                val p = rowPixels[x]
+                rowRgbBytes[byteIdx++] = ((p shr 16) and 0xFF).toByte()
+                rowRgbBytes[byteIdx++] = ((p shr 8) and 0xFF).toByte()
+                rowRgbBytes[byteIdx++] = (p and 0xFF).toByte()
+            }
+            out.write(rowRgbBytes)
+        }
         out.flush()
     }
 }

@@ -20,17 +20,18 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,7 +63,7 @@ fun CalibrationSheet(
     modifier: Modifier = Modifier,
 ) {
     var tab by remember { mutableStateOf(SheetTab.PALETTE) }
-    val cardShape = RoundedCornerShape(32.dp)
+    val cardShape = RoundedCornerShape(36.dp)
 
     Box(
         modifier = modifier
@@ -75,9 +76,9 @@ fun CalibrationSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(cardShape)
-                .background(Color(0xEE16171B))
-                .border(1.dp, Color(0x35FFFFFF), cardShape)
-                .padding(horizontal = 14.dp, vertical = 14.dp),
+                .background(Color(0xD91C1E22))
+                .border(1.dp, Color(0x28FFFFFF), cardShape)
+                .padding(horizontal = 18.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             SheetHeader(
@@ -111,32 +112,32 @@ private fun SheetHeader(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        // Back Chevron button
+        // Close button: 34.dp circle with Color(0x2EFFFFFF)
         Box(
             modifier = Modifier
-                .size(32.dp)
+                .size(34.dp)
                 .clip(CircleShape)
-                .background(Color(0x22FFFFFF))
+                .background(Color(0x2EFFFFFF))
                 .clickable { onBack() },
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "Back",
+                imageVector = Icons.Default.Close,
+                contentDescription = "Close",
                 tint = Color.White,
                 modifier = Modifier.size(16.dp),
             )
         }
 
-        // Segmented Capsule Tabs: [ PALETTE | TEXTURE ]
+        // Center tabs: PALETTE and TEXTURE side-by-side
         SegmentedTabs(tab = tab, onTabChange = onTabChange)
 
-        // Reset button
+        // Reset button: 34.dp circle kept always visible (dimmed when !showReset)
         Box(
             modifier = Modifier
-                .size(32.dp)
+                .size(34.dp)
                 .clip(CircleShape)
-                .background(if (showReset) Color(0x22FFFFFF) else Color.Transparent)
+                .background(if (showReset) Color(0x2EFFFFFF) else Color(0x18FFFFFF))
                 .clickable(enabled = showReset) { onReset() },
             contentAlignment = Alignment.Center,
         ) {
@@ -153,11 +154,8 @@ private fun SheetHeader(
 @Composable
 private fun SegmentedTabs(tab: SheetTab, onTabChange: (SheetTab) -> Unit) {
     Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(20.dp))
-            .background(Color(0x24FFFFFF))
-            .padding(3.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         TabLabel("PALETTE", tab == SheetTab.PALETTE) { onTabChange(SheetTab.PALETTE) }
         TabLabel("TEXTURE", tab == SheetTab.TEXTURE) { onTabChange(SheetTab.TEXTURE) }
@@ -166,21 +164,14 @@ private fun SegmentedTabs(tab: SheetTab, onTabChange: (SheetTab) -> Unit) {
 
 @Composable
 private fun TabLabel(label: String, selected: Boolean, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(if (selected) Color(0x40FFFFFF) else Color.Transparent)
-            .clickable { onClick() }
-            .padding(horizontal = 16.dp, vertical = 6.dp),
-    ) {
-        Text(
-            text = label,
-            color = if (selected) Color(0xFFFF9E45) else Color(0x8CFFFFFF),
-            fontSize = 11.sp,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-            letterSpacing = 1.sp,
-        )
-    }
+    Text(
+        text = label,
+        color = if (selected) Color(0xFFFFB340) else Color(0xCCFFFFFF),
+        fontSize = 11.5.sp,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = 1.1.sp,
+        modifier = Modifier.clickable { onClick() },
+    )
 }
 
 /** The PALETTE tab: 2D pad + iOS tick-bar intensity scrubber. */
@@ -190,45 +181,6 @@ private fun PaletteContent(state: StyleState, onStateChange: (StyleState) -> Uni
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier.fillMaxWidth(),
     ) {
-        // Spec §1: Persistent top-level HUD real-time integer readouts (Tone: ±N, Color: ±N, Intensity: N%)
-        val toneInt = kotlin.math.round(state.effectiveTone).toInt()
-        val colorInt = kotlin.math.round(state.effectiveColor).toInt()
-        val intensityPct = kotlin.math.round(state.intensity * 100f).toInt()
-
-        Row(
-            modifier = Modifier
-                .padding(bottom = 12.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color(0x33000000))
-                .padding(horizontal = 14.dp, vertical = 5.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "Tone: ${if (toneInt > 0) "+$toneInt" else "$toneInt"}",
-                color = Color.White,
-                fontSize = 11.5.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 0.3.sp,
-            )
-            Box(Modifier.size(3.dp).clip(CircleShape).background(Color(0x55FFFFFF)))
-            Text(
-                text = "Color: ${if (colorInt > 0) "+$colorInt" else "$colorInt"}",
-                color = Color.White,
-                fontSize = 11.5.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 0.3.sp,
-            )
-            Box(Modifier.size(3.dp).clip(CircleShape).background(Color(0x55FFFFFF)))
-            Text(
-                text = "Intensity: $intensityPct%",
-                color = Color(0xFFFF9E45),
-                fontSize = 11.5.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 0.3.sp,
-            )
-        }
-
         PalettePad(
             state = state,
             onPadChange = { color, tone ->
@@ -238,7 +190,7 @@ private fun PaletteContent(state: StyleState, onStateChange: (StyleState) -> Uni
 
         Spacer(Modifier.height(14.dp))
 
-        // iOS - |||||||||||||||| + intensity tick scrubber
+        // iOS - ||||||||||| + intensity tick scrubber
         IntensityTickSlider(
             intensity = state.intensity,
             onIntensityChange = { onStateChange(state.copy(intensity = it)) },
@@ -248,7 +200,7 @@ private fun PaletteContent(state: StyleState, onStateChange: (StyleState) -> Uni
 
 /**
  * iOS-authentic Intensity Tick Bar Slider:
- * Horizontal row with "-" on left, "+" on right, and 18 vertical ticks illuminated in warm amber.
+ * Horizontal row with "-" on left, "+" on right, and 11 vertical ticks illuminated in warm amber.
  * Draggable and tap-scrubbable with haptic feedback.
  */
 @Composable
@@ -258,7 +210,9 @@ private fun IntensityTickSlider(
     modifier: Modifier = Modifier,
 ) {
     val haptic = LocalHapticFeedback.current
-    val tickCount = 18
+    val tickCount = 11
+    val currentIntensity by rememberUpdatedState(intensity)
+    val currentOnIntensityChange by rememberUpdatedState(onIntensityChange)
 
     Row(
         modifier = modifier.padding(horizontal = 4.dp),
@@ -272,9 +226,9 @@ private fun IntensityTickSlider(
             fontWeight = FontWeight.Normal,
             modifier = Modifier
                 .clickable {
-                    val next = (intensity - 0.05f).coerceIn(0f, 1f)
+                    val next = (currentIntensity - 0.05f).coerceIn(0f, 1f)
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    onIntensityChange(next)
+                    currentOnIntensityChange(next)
                 }
                 .padding(horizontal = 8.dp, vertical = 2.dp),
         )
@@ -283,29 +237,29 @@ private fun IntensityTickSlider(
 
         Canvas(
             modifier = Modifier
-                .width(136.dp)
+                .width(84.dp)
                 .height(20.dp)
                 .pointerInput(Unit) {
                     fun updateAt(x: Float) {
                         val fraction = (x / size.width.toFloat()).coerceIn(0f, 1f)
-                        val prevTick = (intensity * (tickCount - 1)).toInt()
-                        val newTick = (fraction * (tickCount - 1)).toInt()
+                        val prevTick = kotlin.math.round(currentIntensity * tickCount).toInt()
+                        val newTick = kotlin.math.round(fraction * tickCount).toInt()
                         if (newTick != prevTick) {
                             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         }
-                        onIntensityChange(fraction)
+                        currentOnIntensityChange(fraction)
                     }
                     detectTapGestures { pos -> updateAt(pos.x) }
                 }
                 .pointerInput(Unit) {
                     fun updateAt(x: Float) {
                         val fraction = (x / size.width.toFloat()).coerceIn(0f, 1f)
-                        val prevTick = (intensity * (tickCount - 1)).toInt()
-                        val newTick = (fraction * (tickCount - 1)).toInt()
+                        val prevTick = kotlin.math.round(currentIntensity * tickCount).toInt()
+                        val newTick = kotlin.math.round(fraction * tickCount).toInt()
                         if (newTick != prevTick) {
                             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         }
-                        onIntensityChange(fraction)
+                        currentOnIntensityChange(fraction)
                     }
                     detectDragGestures(
                         onDragStart = { pos -> updateAt(pos.x) },
@@ -315,19 +269,19 @@ private fun IntensityTickSlider(
         ) {
             val totalW = size.width
             val totalH = size.height
-            val barW = 2.5.dp.toPx()
-            val barH = 14.dp.toPx()
-            val activeBars = (intensity * (tickCount - 1)).toInt().coerceIn(0, tickCount - 1)
+            val barW = 2.dp.toPx()
+            val barH = 11.dp.toPx()
+            val activeCount = kotlin.math.round(currentIntensity * tickCount).toInt()
             val spacing = (totalW - (tickCount * barW)) / (tickCount - 1)
             val topY = (totalH - barH) / 2f
-            val corner = CornerRadius(1.2.dp.toPx(), 1.2.dp.toPx())
+            val corner = CornerRadius(1.dp.toPx(), 1.dp.toPx())
 
-            val activeColor = Color(0xFFFF9500)
+            val activeColor = Color(0xFFFFB340)
             val inactiveColor = Color(0x38FFFFFF)
 
             for (i in 0 until tickCount) {
                 val leftX = i * (barW + spacing)
-                val color = if (i <= activeBars) activeColor else inactiveColor
+                val color = if (i < activeCount) activeColor else inactiveColor
                 drawRoundRect(
                     color = color,
                     topLeft = Offset(leftX, topY),
@@ -346,9 +300,9 @@ private fun IntensityTickSlider(
             fontWeight = FontWeight.Normal,
             modifier = Modifier
                 .clickable {
-                    val next = (intensity + 0.05f).coerceIn(0f, 1f)
+                    val next = (currentIntensity + 0.05f).coerceIn(0f, 1f)
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    onIntensityChange(next)
+                    currentOnIntensityChange(next)
                 }
                 .padding(horizontal = 8.dp, vertical = 2.dp),
         )

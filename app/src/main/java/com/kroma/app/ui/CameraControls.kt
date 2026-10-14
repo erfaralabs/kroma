@@ -2,6 +2,7 @@ package com.kroma.app.ui
 
 import android.graphics.Bitmap
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
@@ -75,10 +76,11 @@ fun ViewfinderGrid(modifier: Modifier = Modifier) {
         val c = Color(0x40FFFFFF)
         val w = size.width
         val h = size.height
-        drawLine(c, Offset(w / 3f, 0f), Offset(w / 3f, h), strokeWidth = 1.5f)
-        drawLine(c, Offset(w * 2f / 3f, 0f), Offset(w * 2f / 3f, h), strokeWidth = 1.5f)
-        drawLine(c, Offset(0f, h / 3f), Offset(w, h / 3f), strokeWidth = 1.5f)
-        drawLine(c, Offset(0f, h * 2f / 3f), Offset(w, h * 2f / 3f), strokeWidth = 1.5f)
+        val stroke = 1.5.dp.toPx()
+        drawLine(c, Offset(w / 3f, 0f), Offset(w / 3f, h), strokeWidth = stroke)
+        drawLine(c, Offset(w * 2f / 3f, 0f), Offset(w * 2f / 3f, h), strokeWidth = stroke)
+        drawLine(c, Offset(0f, h / 3f), Offset(w, h / 3f), strokeWidth = stroke)
+        drawLine(c, Offset(0f, h * 2f / 3f), Offset(w, h * 2f / 3f), strokeWidth = stroke)
     }
 }
 
@@ -119,11 +121,12 @@ fun LensPicker(
     }
 
     var scrubbing by remember { mutableStateOf(false) }
+    var isDragging by remember { mutableStateOf(false) }
     var lastEvent by remember { mutableLongStateOf(0L) }
 
     // Safety net: collapse the ruler shortly after the last interaction.
-    LaunchedEffect(scrubbing, lastEvent) {
-        if (scrubbing) {
+    LaunchedEffect(scrubbing, isDragging, lastEvent) {
+        if (scrubbing && !isDragging) {
             delay(3500)
             scrubbing = false
         }
@@ -163,12 +166,19 @@ fun LensPicker(
                     onDragStart = {
                         // RELATIVE scrub: grabs from the CURRENT zoom, so it never jumps.
                         scrubbing = true
+                        isDragging = true
                         anchor = currentZoom.value.coerceIn(scrubMin, scrubMax)
                         acc = 0f
                         lastEvent = System.currentTimeMillis()
                     },
-                    onDragEnd = { scrubbing = false },
-                    onDragCancel = { scrubbing = false },
+                    onDragEnd = {
+                        isDragging = false
+                        lastEvent = System.currentTimeMillis()
+                    },
+                    onDragCancel = {
+                        isDragging = false
+                        lastEvent = System.currentTimeMillis()
+                    },
                 ) { change, dragAmount ->
                     change.consume()
                     lastEvent = System.currentTimeMillis()
@@ -209,7 +219,14 @@ fun LensPicker(
                             .size(34.dp)
                             .clip(CircleShape)
                             .background(if (active) Color(0x99202024) else Color.Transparent)
-                            .clickable(enabled = i >= 0) { if (i >= 0) onSelect(i) },
+                            .clickable {
+                                if (i >= 0) {
+                                    onSelect(i)
+                                } else {
+                                    scrubbing = true
+                                    lastEvent = System.currentTimeMillis()
+                                }
+                            },
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
@@ -246,38 +263,51 @@ private fun ZoomRuler(stops: List<Float>, liveZoom: Float, minZoom: Float, maxZo
                 .align(Alignment.BottomCenter),
         ) {
             val y = size.height
-            drawLine(Color(0x55FFFFFF), Offset(0f, y), Offset(size.width, y), 2f)
-            drawLine(Color.White, Offset(0f, y), Offset(size.width * progress, y), 3f)
+            val lineWidth = 2.dp.toPx()
+            val activeLineWidth = 3.dp.toPx()
+            val tickHeight = 15.dp.toPx()
+            drawLine(Color(0x55FFFFFF), Offset(0f, y), Offset(size.width, y), strokeWidth = lineWidth)
+            drawLine(Color.White, Offset(0f, y), Offset(size.width * progress, y), strokeWidth = activeLineWidth)
             // Ticks placed by each stop's real position within the device's zoom range.
             stops.forEach { s ->
                 val x = if (maxZoom > minZoom) size.width * (s - minZoom) / (maxZoom - minZoom) else 0f
                 drawLine(
                     if (s <= liveZoom + 0.01f) Color.White else Color(0x55FFFFFF),
-                    Offset(x, y - 15f),
+                    Offset(x, y - tickHeight),
                     Offset(x, y),
-                    2f,
+                    strokeWidth = lineWidth,
                 )
             }
         }
 
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 36.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            stops.forEach { zoom ->
-                val active = kotlin.math.abs(zoom - liveZoom) < 0.05f
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        zoomLabel(zoom),
-                        color = if (active) Color.White else Color(0x99FFFFFF),
-                        fontSize = 12.sp,
-                        fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
-                    )
-                    Text("${(24f * zoom).roundToInt()}mm", color = Color(0x66FFFFFF), fontSize = 9.sp)
-                }
+        val labelWidth = 48.dp
+        stops.forEach { zoom ->
+            val fraction = if (maxZoom > minZoom) (zoom - minZoom) / (maxZoom - minZoom) else 0f
+            val active = kotlin.math.abs(zoom - liveZoom) < 0.05f
+            val xOffset = (trackWidth * fraction - labelWidth / 2)
+                .coerceIn(0.dp, (trackWidth - labelWidth).coerceAtLeast(0.dp))
+
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .offset(x = xOffset)
+                    .width(labelWidth)
+                    .padding(bottom = 36.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    zoomLabel(zoom),
+                    color = if (active) Color.White else Color(0x99FFFFFF),
+                    fontSize = 12.sp,
+                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                    textAlign = TextAlign.Center,
+                )
+                Text(
+                    "${(24f * zoom).roundToInt()}mm",
+                    color = Color(0x66FFFFFF),
+                    fontSize = 9.sp,
+                    textAlign = TextAlign.Center,
+                )
             }
         }
 
@@ -449,12 +479,15 @@ fun PortraitApertureOverlay(
 /** Yellow ring + 6 dots (2 rows of 3) — Quick controls / styles entry point (matches iOS screenshot). */
 @Composable
 fun StyleDotsButton(active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val borderColor = if (active) Color(0xFFFFD60A) else Color(0x33FFFFFF)
+    val dotColor = if (active) Color(0xFFFFD60A) else Color.White
+
     Box(
         modifier = modifier
             .size(46.dp)
             .clip(CircleShape)
             .background(Color(0x66000000))
-            .border(2.dp, Color(0xFFFFD60A), CircleShape)
+            .border(if (active) 2.dp else 1.dp, borderColor, CircleShape)
             .clickable { onClick() },
         contentAlignment = Alignment.Center,
     ) {
@@ -466,7 +499,7 @@ fun StyleDotsButton(active: Boolean, onClick: () -> Unit, modifier: Modifier = M
             val stepY = size.height / (rows - 1)
             for (i in 0 until cols) {
                 for (j in 0 until rows) {
-                    drawCircle(Color.White, radius = r, center = Offset(i * stepX, j * stepY))
+                    drawCircle(dotColor, radius = r, center = Offset(i * stepX, j * stepY))
                 }
             }
         }
@@ -480,6 +513,18 @@ fun ShutterButton(
     modifier: Modifier = Modifier,
     recording: Boolean = false,
 ) {
+    val innerSize by animateDpAsState(
+        targetValue = if (recording) 32.dp else 66.dp,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "shutterInnerSize",
+    )
+    val cornerRadius by animateDpAsState(
+        targetValue = if (recording) 8.dp else 33.dp,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "shutterCornerRadius",
+    )
+    val innerColor = if (recording) Color(0xFFFF3B30) else Color.White
+
     Box(
         modifier = modifier
             .size(78.dp)
@@ -488,18 +533,14 @@ fun ShutterButton(
             .clickable { onClick() },
         contentAlignment = Alignment.Center,
     ) {
-        val innerShape = if (recording) RoundedCornerShape(8.dp) else CircleShape
-        val innerSize = if (recording) 32.dp else 66.dp
-        val innerColor = if (recording) Color(0xFFFF3B30) else Color.White
         Box(
             Modifier
                 .size(innerSize)
-                .clip(innerShape)
+                .clip(RoundedCornerShape(cornerRadius))
                 .background(innerColor),
         )
     }
 }
-
 
 /** Circular gallery thumbnail showing the most recent capture (falls back to a swatch). */
 @Composable
@@ -509,6 +550,8 @@ fun ThumbnailButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val imageBitmap = remember(bitmap) { bitmap?.asImageBitmap() }
+
     Box(
         modifier = modifier
             .size(46.dp)
@@ -518,9 +561,9 @@ fun ThumbnailButton(
             .clickable { onClick() },
         contentAlignment = Alignment.Center,
     ) {
-        if (bitmap != null) {
+        if (imageBitmap != null) {
             Image(
-                bitmap = bitmap.asImageBitmap(),
+                bitmap = imageBitmap,
                 contentDescription = "Last photo",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
@@ -536,6 +579,8 @@ fun ThumbnailButton(
  */
 @Composable
 fun ModeSelector(selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
+    val currentSelected by rememberUpdatedState(selected)
+    val currentOnSelect by rememberUpdatedState(onSelect)
     val initialIdx = remember { selected.coerceIn(0, CameraMode.ALL.size - 1) }
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialIdx)
     val isDragged by listState.interactionSource.collectIsDraggedAsState()
@@ -569,9 +614,9 @@ fun ModeSelector(selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Mo
                 }?.index
             }
         }.collect { centerIdx ->
-            if (centerIdx != null && centerIdx != selected && userSwiping) {
+            if (centerIdx != null && centerIdx != currentSelected && userSwiping) {
                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                onSelect(centerIdx)
+                currentOnSelect(centerIdx)
             }
             if (!listState.isScrollInProgress) {
                 userSwiping = false
@@ -605,9 +650,9 @@ fun ModeSelector(selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Mo
                         .width(slotWidth)
                         .height(44.dp)
                         .clickable {
-                            if (index != selected) {
+                            if (index != currentSelected) {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                onSelect(index)
+                                currentOnSelect(index)
                             }
                         },
                     contentAlignment = Alignment.Center,
